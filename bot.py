@@ -4,18 +4,16 @@ import requests
 import json
 import re
 import time
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# SSL warnings বন্ধ করা
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # --- কনফিগারেশন ---
 BOT_TOKEN = '8707267313:AAFzqkne7yUZjeNnXza6KbhHIIJMuq1v_zI'  # এখানে আপনার টোকেন দিন
-
-# একাধিক API URL (যদি একটি কাজ না করে অন্যটি চেষ্টা করবে)
-API_URLS = [
-    'https://nhbdprank.ct.ws/api.php',
-    'http://nhbdprank.ct.ws/api.php',  # HTTP ভার্সন
-    'https://nhbdprank.ct.ws/api.php?',  # অল্টারনেটিভ
-]
+API_URL = 'https://nhbdprank.ct.ws/api.php'
 
 bot = telebot.TeleBot(BOT_TOKEN)
 user_data = {}
@@ -37,10 +35,10 @@ def create_session():
         total=3,
         read=3,
         connect=3,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504, 429]
+        backoff_factor=0.5,
+        status_forcelist=[500, 502, 503, 504]
     )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
     return session
@@ -52,7 +50,7 @@ def is_valid_bangladesh_number(number):
     return re.match(pattern, number) is not None
 
 def send_prank_call(phone_number, prank_id):
-    """একাধিক API URL চেষ্টা করবে"""
+    """API কল - SSL warning ছাড়া"""
     params = {
         'number': phone_number,
         'prank': prank_id
@@ -62,71 +60,74 @@ def send_prank_call(phone_number, prank_id):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Connection': 'keep-alive',
-        'Cache-Control': 'no-cache'
+        'Connection': 'keep-alive'
     }
     
-    last_error = None
-    
-    # প্রতিটি API URL চেষ্টা করি
-    for api_url in API_URLS:
+    try:
+        print(f"📤 API Request: {API_URL}?number={phone_number}&prank={prank_id}")
+        
+        # verify=False দিয়ে SSL warning বন্ধ
+        response = session.get(
+            API_URL, 
+            params=params, 
+            headers=headers,
+            timeout=30,
+            verify=False
+        )
+        
+        print(f"📥 Response Status: {response.status_code}")
+        
+        if response.status_code != 200:
+            return {
+                'success': False, 
+                'error': f'HTTP {response.status_code}: {response.reason}'
+            }
+        
+        if not response.text or not response.text.strip():
+            return {
+                'success': False, 
+                'error': 'API থেকে খালি রেসপন্স'
+            }
+        
         try:
-            print(f"📤 Trying API: {api_url}")
+            result = response.json()
+            print(f"✅ JSON Parsed Successfully: {result}")
+            return result
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON Parse Error: {e}")
+            print(f"📄 Response Text: {response.text[:200]}")
+            return {
+                'success': False,
+                'error': f'API থেকে ভুল রেসপন্স ফরম্যাট',
+                'raw_response': response.text[:200]
+            }
             
-            response = session.get(
-                api_url, 
-                params=params, 
-                headers=headers,
-                timeout=20,
-                verify=False  # SSL সমস্যা এড়াতে
-            )
-            
-            print(f"📥 Status: {response.status_code}")
-            
-            if response.status_code == 200 and response.text:
-                try:
-                    result = response.json()
-                    if result.get('success'):
-                        return result
-                    else:
-                        # success false হলে পরবর্তী URL চেষ্টা করি
-                        continue
-                except json.JSONDecodeError:
-                    continue
-                    
-        except Exception as e:
-            last_error = str(e)
-            print(f"❌ Error with {api_url}: {e}")
-            continue
-    
-    # সব URL ব্যর্থ হলে
-    return {
-        'success': False,
-        'error': f'সব API এন্ডপয়েন্ট ব্যর্থ। শেষ এরর: {last_error}',
-        'raw_response': None
-    }
+    except requests.exceptions.Timeout:
+        return {'success': False, 'error': 'API টাইমআউট'}
+    except requests.exceptions.ConnectionError:
+        return {'success': False, 'error': 'API সংযোগ নেই'}
+    except Exception as e:
+        return {'success': False, 'error': f'এরর: {str(e)}'}
 
 def test_api_connection():
-    """সব API URL চেক করে"""
-    results = []
-    for api_url in API_URLS:
-        try:
-            response = session.get(api_url, timeout=10, verify=False)
-            if response.status_code == 200:
-                results.append(f"✅ {api_url} - সংযুক্ত")
-            else:
-                results.append(f"❌ {api_url} - স্ট্যাটাস {response.status_code}")
-        except Exception as e:
-            results.append(f"❌ {api_url} - {str(e)[:50]}")
-    
-    return "\n".join(results)
+    """API সংযোগ পরীক্ষা"""
+    try:
+        response = session.get(API_URL, timeout=10, verify=False)
+        if response.status_code == 200:
+            try:
+                json.loads(response.text)
+                return True, "✅ API সংযুক্ত এবং JSON রেসপন্স দিচ্ছে"
+            except:
+                return False, f"⚠️ API JSON দিচ্ছে না: {response.text[:100]}"
+        return False, f"❌ API স্ট্যাটাস: {response.status_code}"
+    except Exception as e:
+        return False, f"❌ সংযোগ এরর: {str(e)[:100]}"
 
 def get_main_keyboard():
     keyboard = InlineKeyboardMarkup(row_width=1)
     keyboard.add(
         InlineKeyboardButton("📞 নতুন প্র্যাঙ্ক কল", callback_data="new_prank"),
-        InlineKeyboardButton("🔍 API ডায়াগনস্টিক", callback_data="test_api"),
-        InlineKeyboardButton("🔄 API রিফ্রেশ", callback_data="refresh_api"),
+        InlineKeyboardButton("🔍 API টেস্ট", callback_data="test_api"),
         InlineKeyboardButton("❓ সাহায্য", callback_data="help"),
         InlineKeyboardButton("ℹ️ সম্পর্কে", callback_data="about")
     )
@@ -141,13 +142,13 @@ def get_prank_selection_keyboard():
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    status_text = test_api_connection()
+    status, msg = test_api_connection()
+    api_status = "🟢 সংযুক্ত" if status else f"🔴 {msg}"
     
     welcome_text = (
         f"👋 *প্র্যাঙ্ক কল বট*\n\n"
-        f"📡 *API স্ট্যাটাস:*\n{status_text}\n\n"
-        f"📌 নিচের বোতামে ক্লিক করে প্র্যাঙ্ক কল পাঠান।\n\n"
-        f"⚠️ API সার্ভার ডাউন থাকলে '🔄 API রিফ্রেশ' চাপুন।"
+        f"📡 API স্ট্যাটাস: {api_status}\n\n"
+        f"📌 নিচের বোতামে ক্লিক করে প্র্যাঙ্ক কল পাঠান।"
     )
     bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
 
@@ -169,25 +170,20 @@ def handle_callback(call):
 
     elif data == "test_api":
         bot.answer_callback_query(call.id, "⏳ API চেক করা হচ্ছে...")
-        status_text = test_api_connection()
+        status, msg = test_api_connection()
         
-        bot.send_message(
-            call.message.chat.id,
-            f"🔍 *API ডায়াগনস্টিক রেজাল্ট:*\n\n{status_text}\n\n"
-            f"💡 যদি সব URL ব্যর্থ হয়, তাহলে API সার্ভার ডাউন।",
-            parse_mode='Markdown'
-        )
-
-    elif data == "refresh_api":
-        bot.answer_callback_query(call.id, "🔄 API রিফ্রেশ করা হচ্ছে...")
-        status_text = test_api_connection()
-        
-        bot.send_message(
-            call.message.chat.id,
-            f"🔄 *API রিফ্রেশ সম্পন্ন!*\n\n{status_text}\n\n"
-            f"✅ এখন আবার প্র্যাঙ্ক কল চেষ্টা করুন।",
-            parse_mode='Markdown'
-        )
+        if status:
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ *API সংযুক্ত!*\n\n{msg}",
+                parse_mode='Markdown'
+            )
+        else:
+            bot.send_message(
+                call.message.chat.id,
+                f"❌ *API সমস্যা!*\n\n{msg}",
+                parse_mode='Markdown'
+            )
 
     elif data == "help":
         help_text = (
@@ -196,28 +192,28 @@ def handle_callback(call):
             "2️⃣ আপনার 11 ডিজিটের নম্বর পাঠান\n"
             "3️⃣ প্র্যাঙ্ক টাইটেল সিলেক্ট করুন\n"
             "4️⃣ কল পাঠানো হবে!\n\n"
-            "🔄 যদি API ডাউন থাকে, '🔄 API রিফ্রেশ' চাপুন\n\n"
-            "⚠️ *সতর্কতা:* শুধুমাত্র বিনোদনের জন্য"
+            "⚠️ *সতর্কতা:* শুধুমাত্র বিনোদনের জন্য\n"
+            "📞 প্রশ্ন: @nobxvau"
         )
         bot.send_message(call.message.chat.id, help_text, parse_mode='Markdown')
 
     elif data == "about":
         about_text = (
-            "🤖 *প্র্যাঙ্ক কল বট v2.1*\n\n"
+            "🤖 *প্র্যাঙ্ক কল বট v2.2*\n\n"
             "🔗 API: NHB Prank\n"
             "👤 Creator: @nobxvau\n"
-            "🔄 মাল্টিপল API এন্ডপয়েন্ট সাপোর্ট"
+            "📅 SSL Warnings Fixed"
         )
         bot.send_message(call.message.chat.id, about_text, parse_mode='Markdown')
 
     elif data == "back_to_menu":
-        status_text = test_api_connection()
+        status, msg = test_api_connection()
+        api_status = "🟢 সংযুক্ত" if status else f"🔴 {msg[:30]}"
         bot.edit_message_text(
-            f"👋 মূল মেনুতে ফিরে এসেছেন।\n\n📡 {status_text}",
+            f"👋 মূল মেনু\n\n📡 {api_status}",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
+            reply_markup=get_main_keyboard()
         )
 
     elif data.startswith("prank_"):
@@ -230,9 +226,7 @@ def handle_callback(call):
             
             msg = bot.send_message(
                 call.message.chat.id,
-                f"⏳ *'{prank_title}'* দিয়ে `{phone_number}` এ কল পাঠানো হচ্ছে...\n\n"
-                f"⏱️ দয়া করে অপেক্ষা করুন (সর্বোচ্চ ২০ সেকেন্ড)\n"
-                f"🔄 একাধিক API এন্ডপয়েন্ট চেষ্টা করা হচ্ছে...",
+                f"⏳ *'{prank_title}'* দিয়ে `{phone_number}` এ কল পাঠানো হচ্ছে...",
                 parse_mode='Markdown'
             )
 
@@ -250,17 +244,13 @@ def handle_callback(call):
                 )
                 bot.send_message(call.message.chat.id, response_msg, parse_mode='Markdown')
             else:
-                error_msg = result.get('error', 'API সার্ভার ডাউন')
+                error_msg = result.get('error', 'অজানা এরর')
+                raw_response = result.get('raw_response', '')
                 
-                error_response = (
-                    f"❌ *প্র্যাঙ্ক কল ব্যর্থ!*\n\n"
-                    f"🔴 কারণ: {error_msg}\n\n"
-                    f"💡 *সমাধান:*\n"
-                    f"• '🔄 API রিফ্রেশ' বোতাম চাপুন\n"
-                    f"• কিছুক্ষণ পর আবার চেষ্টা করুন\n"
-                    f"• API সার্ভার ডাউন থাকতে পারে\n"
-                    f"• @nobxvau-কে জানান"
-                )
+                error_response = f"❌ *প্র্যাঙ্ক কল ব্যর্থ!*\n\n🔴 কারণ: {error_msg}"
+                if raw_response:
+                    error_response += f"\n\n📄 রেসপন্স: `{raw_response}`"
+                
                 bot.send_message(call.message.chat.id, error_response, parse_mode='Markdown')
             
             if user_id in user_data:
@@ -288,9 +278,7 @@ def handle_message(message):
         else:
             bot.reply_to(
                 message, 
-                "❌ নম্বরটি বৈধ নয়!\n\n"
-                "সঠিক ফরম্যাট: `018XXXXXXXX`\n"
-                "⚠️ 01 দিয়ে শুরু এবং 11 ডিজিট হতে হবে।",
+                "❌ নম্বরটি বৈধ নয়!\n\nসঠিক ফরম্যাট: `018XXXXXXXX`",
                 parse_mode='Markdown'
             )
     else:
@@ -302,12 +290,11 @@ def handle_message(message):
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("🤖 প্র্যাঙ্ক কল বট v2.1 চালু হচ্ছে...")
+    print("🤖 প্র্যাঙ্ক কল বট v2.2 চালু হচ্ছে...")
     print("=" * 50)
     
-    # সব API চেক
-    status_text = test_api_connection()
-    print(f"📡 API স্ট্যাটাস:\n{status_text}")
+    status, msg = test_api_connection()
+    print(f"📡 API স্ট্যাটাস: {msg}")
     
     print("🚀 বট রানিং...")
     print("=" * 50)
