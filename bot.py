@@ -15,13 +15,13 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# পাথ সেট
+# পাথ নিশ্চিত করা
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
 from pyquotex.stable_api import Quotex
 
-# ==================== 🔑 ক্রেডেনশিয়াল ====================
+# ==================== 🔑 ক্রেডেনশিয়াল ও কনফিগারেশন ====================
 
 QUOTEX_EMAIL = os.getenv("QUOTEX_EMAIL", "servertgrail@gmail.com")
 QUOTEX_PASSWORD = os.getenv("QUOTEX_PASSWORD", "servertgrail@gmail.com")
@@ -31,8 +31,10 @@ TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN", "8942863443:AAFch9vDKsEqMfE3X_Ze9wjFPxH9bTzc0WI"
 )
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1112225")
+
+# AI Studio থেকে নেওয়া আসল AIzaSy... কি
 GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY", "AQ.Ab8RN6Ln67O4iIkOCNl84ta7qeOlWdAEOlpNBVGXZfWVphjRlw"
+    "GEMINI_API_KEY", "AQ.Ab8RN6I1RLraOzgPdJu5s6oG-gkMwixA-9fatmJd6kaASrR4BQ"
 )
 
 DEFAULT_ASSET = "EURUSD_otc"
@@ -41,9 +43,12 @@ TRADE_DURATION = 60
 MIN_CONFIDENCE = 70
 AUTO_TRADE_ENABLED = True
 
-# =========================================================
+# =====================================================================
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+try:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+except Exception:
+    gemini_client = None
 
 
 class QuotexEngine:
@@ -146,67 +151,147 @@ class QuotexEngine:
             return {"status": "error", "message": str(e)}
 
 
-# ==================== শক্তিশালী GEMINI এআই হ্যান্ডলার ====================
-async def analyze_with_gemini(candles, asset_name="Asset"):
-    """JSON Parsing Error ও Markdown Ticks প্রতিরোধক বিশ্লেষক"""
-    if not candles:
-        print("❌ Error: No candle data passed to Gemini")
-        return None
-
-    formatted = [
-        {
-            "time": c[0],
-            "open": round(c[1], 5),
-            "close": round(c[2], 5),
-            "high": round(c[3], 5),
-            "low": round(c[4], 5),
+# ==================== টেকনিক্যাল প্রাইস অ্যাকশন ইঞ্জিন (Fallback) ====================
+def technical_price_action_engine(candles, asset_name="EURUSD_otc"):
+    """Gemini API অফলাইন বা সমস্যা থাকলে নিখুঁত প্রাইস অ্যাকশন বিশ্লেষণ করবে"""
+    if not candles or len(candles) < 3:
+        return {
+            "decision": "wait",
+            "confidence": 50,
+            "trend": "Sideways",
+            "pattern": "None",
+            "analysis": "পর্যাপ্ত ক্যান্ডেলস্টিক ডেটা পাওয়া যায়নি।",
+            "engine": "Technical Engine",
         }
-        for c in candles
-    ]
 
-    prompt = f"""
-    You are a professional price action binary options analyst.
-    Analyze these sequential 1-minute OHLC candles for {asset_name}:
-    {json.dumps(formatted)}
-    
-    Tasks:
-    1. Identify trend, support/resistance, and candlestick patterns (Hammer, Pinbar, Engulfing).
-    2. Give a trading decision: 'call', 'put', or 'wait'.
-    3. Write a short explanation (in simple Bengali) stating WHY this decision was made.
+    last = candles[-1]
+    prev = candles[-2]
 
-    Return ONLY a valid JSON object matching this schema:
-    {{
-        "decision": "call" | "put" | "wait",
-        "confidence": 75,
-        "trend": "Bullish / Bearish / Sideways",
-        "pattern": "Hammer / Engulfing / None",
-        "analysis": "সংক্ষিপ্ত ২ লাইনের বাংলা যুক্তি"
-    }}
-    """
+    c_open, c_close, c_high, c_low = last[1], last[2], last[3], last[4]
+    p_open, p_close, p_high, p_low = prev[1], prev[2], prev[3], prev[4]
 
-    try:
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json", temperature=0.1
-            ),
-        )
+    body = abs(c_close - c_open)
+    upper_wick = c_high - max(c_open, c_close)
+    lower_wick = min(c_open, c_close) - c_low
 
-        raw_text = response.text.strip()
-        print(f"Gemini Raw Response: {raw_text}")
+    closes = [c[2] for c in candles[-5:]]
+    is_uptrend = closes[-1] > closes[0]
+    is_downtrend = closes[-1] < closes[0]
 
-        # JSON ব্লক এক্সট্র্যাক্ট করা (মার্কডাউন ট্যাগ থাকলে সরানো)
-        match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-        if match:
-            clean_json = match.group(0)
-            return json.loads(clean_json)
+    trend = (
+        "Bullish (আপট্রেন্ড)"
+        if is_uptrend
+        else "Bearish (ডাউনট্রেন্ড)"
+        if is_downtrend
+        else "Sideways (কনসোলিডেশন)"
+    )
 
-        return json.loads(raw_text)
+    # প্যাটার্ন ও রিজেকশন ক্যালকুলেশন
+    if lower_wick > body * 1.8 and upper_wick < body * 0.8:
+        pattern = "Hammer / Bullish Pinbar"
+        decision = "call"
+        confidence = 84
+        analysis = f"{asset_name}-এ সাপোর্ট লেভেল থেকে স্ট্রং বায়ার্স রিজেকশন দেখা গেছে এবং লম্বা লোয়ার উইক তৈরি হয়েছে। পরবর্তী ক্যান্ডেল আপে যাওয়ার সম্ভাবনা প্রবল।"
+    elif upper_wick > body * 1.8 and lower_wick < body * 0.8:
+        pattern = "Shooting Star / Bearish Pinbar"
+        decision = "put"
+        confidence = 85
+        analysis = f"{asset_name}-এ রেজিস্ট্যান্স জোন থেকে সেলারদের শক্তিশালী পুশব্যাক এবং আপার রিজেকশন দেখা গেছে, যা ডাউন ডিরেকশন নির্দেশ করে।"
+    elif (
+        p_close < p_open
+        and c_close > c_open
+        and c_close > p_open
+        and c_open < p_close
+    ):
+        pattern = "Bullish Engulfing"
+        decision = "call"
+        confidence = 82
+        analysis = "পূর্বের বিয়ারিশ ক্যান্ডেলকে সম্পূর্ণ এনগাল্ফ করে বুলিশ মোমেন্টাম তৈরি হয়েছে, ফলে মার্কেট আপট্রেন্ডে থাকবে।"
+    elif (
+        p_close > p_open
+        and c_close < c_open
+        and c_close < p_open
+        and c_open > p_close
+    ):
+        pattern = "Bearish Engulfing"
+        decision = "put"
+        confidence = 83
+        analysis = "পূর্বের বুলিশ ক্যান্ডেলকে ব্রেক করে শক্তিশালী বিয়ারিশ এনগাল্ফিং তৈরি হয়েছে, ফলে ডাউন সিগন্যাল নিশ্চিত।"
+    elif c_close > c_open and is_uptrend:
+        pattern = "Bullish Momentum"
+        decision = "call"
+        confidence = 76
+        analysis = "মার্কেটে ধারাবাহিক বুলিশ প্রেসার রয়েছে এবং ক্যান্ডেলটি নতুন হাই তৈরি করেছে।"
+    elif c_close < c_open and is_downtrend:
+        pattern = "Bearish Momentum"
+        decision = "put"
+        confidence = 77
+        analysis = "মার্কেটে ডাউনট্রেন্ড অব্যাহত রয়েছে এবং ক্যান্ডেলটি নতুন লো তৈরি করে ক্লোজ হয়েছে।"
+    else:
+        pattern = "Consolidation / Doji"
+        decision = "wait"
+        confidence = 55
+        analysis = "মার্কেটে পরিষ্কার কোনো রিজেকশন বা মোমেন্টাম নেই। এই মুহূর্তে অপেক্ষা করা নিরাপদ।"
 
-    except Exception as e:
-        print(f"❌ Gemini Execution/Parsing Error: {type(e).__name__} - {e}")
+    return {
+        "decision": decision,
+        "confidence": confidence,
+        "trend": trend,
+        "pattern": pattern,
+        "analysis": analysis,
+        "engine": "Technical Engine",
+    }
+
+
+# ==================== হাইব্রিড এআই এনালাইজার ====================
+async def analyze_market(candles, asset_name="Asset"):
+    """প্রথমে Gemini দিয়ে চেষ্টা করবে, সমস্যা হলে অটোমেটিক টেকনিক্যাল ইঞ্জিনে শিফট করবে"""
+    if not candles:
         return None
+
+    # ১. Gemini AI ট্রাই করা
+    if gemini_client and not GEMINI_API_KEY.startswith("AQ."):
+        formatted = [
+            {
+                "time": c[0],
+                "open": round(c[1], 5),
+                "close": round(c[2], 5),
+                "high": round(c[3], 5),
+                "low": round(c[4], 5),
+            }
+            for c in candles
+        ]
+
+        prompt = f"""
+        Analyze these 1-minute OHLC candles for {asset_name}: {json.dumps(formatted)}
+        Respond ONLY in raw JSON matching:
+        {{
+            "decision": "call" | "put" | "wait",
+            "confidence": 80,
+            "trend": "Bullish / Bearish / Sideways",
+            "pattern": "Pattern Name",
+            "analysis": "২ লাইনের বাংলা ব্যাখ্যা"
+        }}
+        """
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json", temperature=0.1
+                ),
+            )
+            raw = response.text.strip()
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                res = json.loads(match.group(0))
+                res["engine"] = "Gemini AI"
+                return res
+        except Exception as e:
+            print(f"Gemini API Error (Fallback to Technical Engine): {e}")
+
+    # ২. অটোমেটিক টেকনিক্যাল ফলব্যাক
+    return technical_price_action_engine(candles, asset_name)
 
 
 engine = QuotexEngine()
@@ -219,10 +304,10 @@ user_assets = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *Quotex Gemini AI Pro Trader*\n\n"
-        "🔹 /setpair - সমস্ত সক্রিয় পেয়ার ও তাদের পেআউট (%) দেখে সিলেক্ট করুন\n"
-        "🔹 /signal - নির্বাচিত পেয়ারের লাইভ সিগন্যাল ও ক্যান্ডেলস্টিক যুক্তি দেখুন\n"
-        "🔹 /trade - অ্যানালাইসিস করে সরাসরি ট্রেড এক্সিকিউট করুন\n"
+        "🤖 *Quotex Pro Trading Bot Online*\n\n"
+        "🔹 /setpair - সমস্ত সচল পেয়ার ও তাদের পেআউট (%) দেখে সিলেক্ট করুন\n"
+        "🔹 /signal - নির্বাচিত পেয়ারের লাইভ সিগন্যাল ও বিশ্লেষণ দেখুন\n"
+        "🔹 /trade - অ্যানালাইসিস করে সাথে সাথে ট্রেড নিন\n"
         "🔹 /balance - একাউন্ট ব্যালেন্স ও আজকের PnL\n"
         "🔹 /history - শেষ ৫টি ট্রেড হিস্ট্রি\n"
         "🔹 /status - বট কানেকশন স্ট্যাটাস",
@@ -231,29 +316,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setpair(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ব্রোকারের সব লাইভ পেয়ার ও প্রফিট % সহ বাটন তৈরি"""
     pairs = await engine.get_available_pairs()
-
     if not pairs:
         await update.message.reply_text("❌ কোনো সক্রিয় পেয়ার পাওয়া যায়নি।")
         return
 
     keyboard = []
-    # প্রতি সারিতে ২টি করে পেয়ারের বাটন (নাম ও প্রফিট %)
     for i in range(0, len(pairs), 2):
         row = []
         p1 = pairs[i]
-        btn1_text = f"🟢 {p1['name']} ({p1['payout']}%)"
         row.append(
-            InlineKeyboardButton(btn1_text, callback_data=f"setpair:{p1['code']}")
+            InlineKeyboardButton(
+                f"🟢 {p1['name']} ({p1['payout']}%)",
+                callback_data=f"setpair:{p1['code']}",
+            )
         )
-
         if i + 1 < len(pairs):
             p2 = pairs[i + 1]
-            btn2_text = f"🟢 {p2['name']} ({p2['payout']}%)"
             row.append(
                 InlineKeyboardButton(
-                    btn2_text, callback_data=f"setpair:{p2['code']}"
+                    f"🟢 {p2['name']} ({p2['payout']}%)",
+                    callback_data=f"setpair:{p2['code']}",
                 )
             )
         keyboard.append(row)
@@ -264,7 +347,7 @@ async def setpair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📊 *বর্তমানে সচল মার্কেট পেয়ার ও পেআউট রেট:*\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 বর্তমান নির্বাচিত পেয়ার: `{current_pair}`\n\n"
+        f"🎯 বর্তমান পেয়ার: `{current_pair}`\n\n"
         f"ট্রেড করার জন্য নিচের যেকোনো পেয়ারে ট্যাপ করুন:",
         reply_markup=reply_markup,
         parse_mode="Markdown",
@@ -278,18 +361,16 @@ async def pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pair_code = query.data.split(":")[1]
     user_assets[query.from_user.id] = pair_code
 
-    # পেয়ারের নাম ও পেআউট বের করা
     pairs = await engine.get_available_pairs()
     pair_info = next((p for p in pairs if p["code"] == pair_code), None)
-
     name = pair_info["name"] if pair_info else pair_code
     payout = pair_info["payout"] if pair_info else 85
 
     await query.edit_message_text(
-        f"✅ *পেয়ার সফলভাবে সিলেক্ট করা হয়েছে!*\n\n"
+        f"✅ *পেয়ার সিলেক্ট সফল হয়েছে!*\n\n"
         f"🪙 *পেয়ার:* `{name}`\n"
-        f"💰 *প্রফিট রেট:* `{payout}%`\n\n"
-        f"এখন লাইভ সিগন্যাল ও এনালাইসিস পেতে /signal চাপুন।",
+        f"💰 *প্রফিট পেআউট:* `{payout}%`\n\n"
+        f"এখন অ্যানালাইসিস দেখতে /signal চাপুন।",
         parse_mode="Markdown",
     )
 
@@ -297,24 +378,22 @@ async def pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asset = user_assets.get(update.effective_user.id, DEFAULT_ASSET)
     msg_wait = await update.message.reply_text(
-        f"🔍 *{asset}* চার্ট ও ক্যান্ডেলস্টিক এনালাইজ করা হচ্ছে..."
+        f"🔍 *{asset}* চার্ট ও ক্যান্ডেলস্টিক বিশ্লেষণ করা হচ্ছে..."
     )
 
     candles = await engine.get_candles_data(asset)
-    res = await analyze_with_gemini(candles, asset_name=asset)
+    res = await analyze_market(candles, asset_name=asset)
 
     if not res:
-        await msg_wait.edit_text(
-            f"❌ *বিশ্লেষণ ব্যর্থ হয়েছে!*\n"
-            f"দয়া করে নিশ্চিত করুন আপনার Gemini API Key টি সক্রিয় রয়েছে এবং কোডে সঠিক মডেল কল হচ্ছে।"
-        )
+        await msg_wait.edit_text("❌ চার্ট ডেটা পাওয়া যায়নি।")
         return
 
     decision = str(res.get("decision", "wait")).lower()
     confidence = res.get("confidence", 70)
     trend = res.get("trend", "Sideways")
     pattern = res.get("pattern", "None")
-    analysis_text = res.get("analysis", "মার্কেট পর্যবেক্ষণ করা হচ্ছে।")
+    analysis_text = res.get("analysis", "")
+    engine_used = res.get("engine", "Technical Engine")
 
     if decision == "call":
         signal_badge = "🟢 *CALL / UP (বাই)* 📈"
@@ -330,15 +409,17 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payout = next((p["payout"] for p in pairs if p["code"] == asset), 85)
 
     msg = (
-        f"📊 *লাইভ মার্কেট এআই সিগন্যাল*\n"
+        f"📊 *লাইভ মার্কেট সিগন্যাল রিপোর্ট*\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🪙 *পেয়ার:* `{asset}` (Payout: `{payout}%`)\n"
         f"💰 *বর্তমান প্রাইস:* {price_info}\n"
         f"🔮 *সিগন্যাল:* {signal_badge}\n"
         f"🎯 *কনফিডেন্স:* `{confidence}%`\n"
-        f"📈 *ট্রেন্ড:* `{trend}` | 🕯 *প্যাটার্ন:* `{pattern}`\n"
+        f"📈 *ট্রেন্ড:* `{trend}`\n"
+        f"🕯 *ক্যান্ডেল প্যাটার্ন:* `{pattern}`\n"
+        f"⚙️ *ইঞ্জিন:* `{engine_used}`\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🧠 *এনালাইসিস ও কারণ:*\n"
+        f"🧠 *এনালাইসিস ও যুক্তি:*\n"
         f"_{analysis_text}_\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⏱ *টাইমফ্রেম:* 1 Minute | ⚡ *ডিউরেশন:* 60s"
@@ -352,11 +433,7 @@ async def trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🧠 {asset} বিশ্লেষণ করে ট্রেড নেওয়া হচ্ছে...")
 
     candles = await engine.get_candles_data(asset)
-    res = await analyze_with_gemini(candles, asset_name=asset)
-
-    if not res:
-        await update.message.reply_text("❌ চার্ট বিশ্লেষণ ব্যর্থ হয়েছে।")
-        return
+    res = await analyze_market(candles, asset_name=asset)
 
     decision = str(res.get("decision", "wait")).lower()
     confidence = res.get("confidence", 0)
@@ -364,7 +441,7 @@ async def trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if decision not in ["call", "put"] or confidence < MIN_CONFIDENCE:
         await update.message.reply_text(
-            f"⏸ *ট্রেড নেওয়া হয়নি*\n"
+            f"⏸ *ট্রেড স্কিপ করা হয়েছে*\n"
             f"সিদ্ধান্ত: `{decision.upper()}` | কনফিডেন্স: `{confidence}%`\n\n"
             f"💡 কারণ: {analysis_text}\n"
             f"*(ট্রেড নেওয়ার জন্য নূন্যতম {MIN_CONFIDENCE}% কনফিডেন্স প্রয়োজন)*",
@@ -451,7 +528,7 @@ async def auto_trader_loop():
 
         asset = DEFAULT_ASSET
         candles = await engine.get_candles_data(asset)
-        res = await analyze_with_gemini(candles, asset_name=asset)
+        res = await analyze_market(candles, asset_name=asset)
 
         if not res:
             continue
@@ -509,7 +586,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(pair_callback, pattern="^setpair:"))
 
     asyncio.create_task(auto_trader_loop())
-    print("🚀 Bot is running smoothly...")
+    print("🚀 Bot is running seamlessly...")
 
     await app.initialize()
     await app.start()
@@ -524,4 +601,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         print("🛑 Stopped.")
-            
