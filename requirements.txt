@@ -1,6 +1,6 @@
 google-genai
 python-telegram-bot>=20.0
-pyquotex
+git+https://github.com/Clever-Roo/pyquotex.git
 aiohttp
 requests
 websockets
