@@ -33,7 +33,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1112225")
 
 # এখানে আপনার AI Studio থেকে পাওয়া সঠিক 'AIzaSy...' Key টি বসাবেন
 GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY", "AQ.Ab8RN6I1RLraOzgPdJu5s6oG-gkMwixA-9fatmJd6kaASrR4BQ"
+    "GEMINI_API_KEY", "AQ.Ab8RN6LA_5wmqYlG7PDeh9eUh0sGipwOwQYXNN25l_c4Q_uhCw"
 )
 
 # এভেলেবেল পেয়ারের তালিকা
