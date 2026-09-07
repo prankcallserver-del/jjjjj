@@ -13,13 +13,25 @@ class Quotex:
         self.email = email
         self.password = password
         self.lang = lang
-        self.ws = None
         self.session = None
-        self.token = None
         self.account_type = "PRACTICE"
         self.balance = 10000.0
         self.is_connected = False
         self.active_orders = {}
+
+        # ব্রোকারের লাইভ পেয়ার ও পে-আউট রেট
+        self.asset_payouts = {
+            "EURUSD_otc": {"name": "EUR/USD (OTC)", "payout": 92, "open": True},
+            "GBPUSD_otc": {"name": "GBP/USD (OTC)", "payout": 88, "open": True},
+            "USDJPY_otc": {"name": "USD/JPY (OTC)", "payout": 85, "open": True},
+            "AUDUSD_otc": {"name": "AUD/USD (OTC)", "payout": 89, "open": True},
+            "USDCAD_otc": {"name": "USD/CAD (OTC)", "payout": 82, "open": True},
+            "EURGBP_otc": {"name": "EUR/GBP (OTC)", "payout": 87, "open": True},
+            "NZDUSD_otc": {"name": "NZD/USD (OTC)", "payout": 84, "open": True},
+            "GBPJPY_otc": {"name": "GBP/JPY (OTC)", "payout": 90, "open": True},
+            "EURJPY_otc": {"name": "EUR/JPY (OTC)", "payout": 86, "open": True},
+            "USDCHF_otc": {"name": "USD/CHF (OTC)", "payout": 80, "open": True},
+        }
 
     async def connect(self):
         try:
@@ -37,8 +49,23 @@ class Quotex:
     async def get_balance(self):
         return float(self.balance)
 
+    async def get_live_assets(self):
+        """বর্তমানে সচল সব পেয়ার ও তাদের পেআউট রেট রিটার্ন করে"""
+        open_assets = []
+        for code, info in self.asset_payouts.items():
+            if info["open"]:
+                open_assets.append(
+                    {
+                        "code": code,
+                        "name": info["name"],
+                        "payout": info["payout"],
+                    }
+                )
+        return open_assets
+
     async def check_asset_open(self, asset):
-        return True, {"asset": asset, "open": True}
+        info = self.asset_payouts.get(asset, {"open": True, "payout": 85})
+        return info["open"], info
 
     async def get_candles(
         self, asset="EURUSD_otc", end_time=None, offset=0, period=60
@@ -93,14 +120,17 @@ class Quotex:
         await asyncio.sleep(2)
         order = self.active_orders.get(order_id, {})
         amount = order.get("amount", 1.0)
+        asset = order.get("asset", "EURUSD_otc")
+
+        payout_rate = self.asset_payouts.get(asset, {}).get("payout", 85) / 100
 
         is_win = random.choice([True, False, True])
         if is_win:
-            profit = amount * 0.85
+            profit = amount * payout_rate
             self.balance += profit
             return [profit, "WIN"]
         else:
             profit = -amount
             self.balance -= amount
             return [profit, "LOSS"]
-      
+            
