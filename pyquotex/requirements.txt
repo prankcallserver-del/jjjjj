@@ -1,9 +1,0 @@
-google-genai
-python-telegram-bot>=20.0
-aiohttp
-requests
-websockets
-websocket-client
-pydantic
-urllib3
-certifi
