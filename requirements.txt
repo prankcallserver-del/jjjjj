@@ -1,5 +1,6 @@
 google-genai
 python-telegram-bot>=20.0
+git+https://github.com/m-rk-1/pyquotex.git
 aiohttp
 requests
 websockets
@@ -7,3 +8,4 @@ websocket-client
 pydantic
 urllib3
 certifi
+
