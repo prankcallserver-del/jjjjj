@@ -1,3 +1,5 @@
-pip install -r requirements.txt
-python -m playwright install chromium
-python bot.py
+python-telegram-bot==20.8
+pyquotex>=1.1.0
+python-dotenv==1.0.1
+websockets==13.1
+playwright==1.48.0
